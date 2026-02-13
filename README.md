@@ -2,7 +2,7 @@
 
 CLI tool that takes a Spotify playlist URL and displays the BPM (tempo) of each track, sorted from slowest to fastest.
 
-BPM data is sourced from [GetSongBPM](https://getsongbpm.com).
+BPM data comes from Spotify's audio features API.
 
 ## Setup
 
@@ -13,18 +13,15 @@ BPM data is sourced from [GetSongBPM](https://getsongbpm.com).
 
 ### API Keys
 
-You'll need two sets of credentials:
-
-1. **Spotify** - Create an app at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) to get a client ID and secret.
-2. **GetSongBPM** - Register at [getsongbpm.com/api](https://getsongbpm.com/api) for a free API key.
+Create an app at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) to get a client ID and secret.
 
 ### Install
 
 ```sh
-git clone <this-repo>
+git clone https://github.com/evanhourigan/spotify-bpm.git
 cd spotify-bpm
 cp .env.example .env
-# Fill in your API keys in .env
+# Fill in your Spotify credentials in .env
 uv sync
 ```
 

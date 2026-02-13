@@ -7,16 +7,12 @@ import io
 import json
 import os
 import sys
-from urllib.parse import quote_plus
 
-import requests
 import spotipy
 from dotenv import load_dotenv
 from spotipy.oauth2 import SpotifyClientCredentials
 
 load_dotenv()
-
-GETSONGBPM_BASE = "https://api.getsong.co"
 
 
 def get_spotify_client():
@@ -30,24 +26,13 @@ def get_spotify_client():
     ))
 
 
-def get_getsongbpm_api_key():
-    key = os.environ.get("GETSONGBPM_API_KEY")
-    if not key:
-        print("Error: GETSONGBPM_API_KEY must be set.", file=sys.stderr)
-        sys.exit(1)
-    return key
-
-
 def extract_playlist_id(url: str) -> str:
     """Extract playlist ID from a Spotify URL or URI."""
-    # Handle URLs like https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=...
     if "open.spotify.com/playlist/" in url:
         path = url.split("open.spotify.com/playlist/")[1]
         return path.split("?")[0].split("/")[0]
-    # Handle URIs like spotify:playlist:37i9dQZF1DXcBWIGoYBM5M
     if url.startswith("spotify:playlist:"):
         return url.split("spotify:playlist:")[1]
-    # Assume it's already a raw ID
     return url.strip()
 
 
@@ -58,13 +43,13 @@ def fetch_playlist_tracks(sp, playlist_id: str) -> list[dict]:
     while True:
         for item in results["items"]:
             track = item.get("track")
-            if not track or not track.get("name"):
+            if not track or not track.get("id"):
                 continue
             artists = ", ".join(a["name"] for a in track["artists"])
             tracks.append({
+                "id": track["id"],
                 "name": track["name"],
                 "artist": artists,
-                "artist_first": track["artists"][0]["name"] if track["artists"] else "",
             })
         if results["next"]:
             results = sp.next(results)
@@ -73,59 +58,25 @@ def fetch_playlist_tracks(sp, playlist_id: str) -> list[dict]:
     return tracks
 
 
-def lookup_bpm(api_key: str, track_name: str, artist: str) -> str:
-    """Look up BPM for a track using the GetSongBPM API.
+def fetch_bpms(sp, tracks: list[dict]) -> None:
+    """Fetch BPMs for all tracks using Spotify's audio features endpoint.
 
-    Searches by song title, then matches against artist name.
-    Returns the tempo as a string, or "unknown" if not found.
+    Processes in batches of 100 (Spotify's limit). Mutates tracks in place,
+    adding a 'bpm' key to each.
     """
-    try:
-        search_url = f"{GETSONGBPM_BASE}/search/?api_key={api_key}&type=song&lookup={quote_plus(track_name)}"
-        resp = requests.get(search_url, timeout=10)
-        if resp.status_code != 200:
-            return "unknown"
-        data = resp.json()
-        search_results = data.get("search", [])
-        if not search_results:
-            return "unknown"
+    track_ids = [t["id"] for t in tracks]
+    tempos = {}
 
-        artist_lower = artist.lower()
-        # Try to find an exact artist match first
-        for result in search_results:
-            result_artist = result.get("artist", {}).get("name", "").lower()
-            if result_artist == artist_lower:
-                song_id = result["id"]
-                return _fetch_tempo(api_key, song_id)
+    # audio_features accepts up to 100 IDs at a time
+    for i in range(0, len(track_ids), 100):
+        batch = track_ids[i:i + 100]
+        results = sp.audio_features(batch)
+        for features in results:
+            if features and features.get("tempo"):
+                tempos[features["id"]] = round(features["tempo"])
 
-        # Fall back to partial match
-        for result in search_results:
-            result_artist = result.get("artist", {}).get("name", "").lower()
-            if artist_lower in result_artist or result_artist in artist_lower:
-                song_id = result["id"]
-                return _fetch_tempo(api_key, song_id)
-
-        # Last resort: use the first result if the title matches closely
-        first = search_results[0]
-        if first.get("title", "").lower() == track_name.lower():
-            return _fetch_tempo(api_key, first["id"])
-
-        return "unknown"
-    except (requests.RequestException, KeyError, IndexError):
-        return "unknown"
-
-
-def _fetch_tempo(api_key: str, song_id: str) -> str:
-    """Fetch the tempo for a specific song ID."""
-    try:
-        url = f"{GETSONGBPM_BASE}/song/?api_key={api_key}&id={song_id}"
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200:
-            return "unknown"
-        data = resp.json()
-        tempo = data.get("song", {}).get("tempo", "")
-        return str(tempo) if tempo else "unknown"
-    except (requests.RequestException, KeyError):
-        return "unknown"
+    for track in tracks:
+        track["bpm"] = str(tempos.get(track["id"], "unknown"))
 
 
 def format_table(tracks: list[dict]) -> str:
@@ -135,7 +86,6 @@ def format_table(tracks: list[dict]) -> str:
 
     name_width = max(len(t["name"]) for t in tracks)
     artist_width = max(len(t["artist"]) for t in tracks)
-    # Clamp column widths for readability
     name_width = min(max(name_width, 5), 50)
     artist_width = min(max(artist_width, 6), 40)
 
@@ -177,17 +127,13 @@ def main():
     args = parser.parse_args()
 
     sp = get_spotify_client()
-    api_key = get_getsongbpm_api_key()
 
     playlist_id = extract_playlist_id(args.playlist_url)
-    print(f"Fetching playlist tracks...", file=sys.stderr)
+    print("Fetching playlist tracks...", file=sys.stderr)
     tracks = fetch_playlist_tracks(sp, playlist_id)
-    print(f"Found {len(tracks)} tracks. Looking up BPMs...", file=sys.stderr)
+    print(f"Found {len(tracks)} tracks. Fetching BPMs...", file=sys.stderr)
 
-    for i, track in enumerate(tracks, 1):
-        bpm = lookup_bpm(api_key, track["name"], track["artist_first"])
-        track["bpm"] = bpm
-        print(f"  [{i}/{len(tracks)}] {track['name']} - {bpm} BPM", file=sys.stderr)
+    fetch_bpms(sp, tracks)
 
     # Sort by BPM ascending (unknown at the end)
     def sort_key(t):
